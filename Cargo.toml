@@ -1,0 +1,9 @@
+[package]
+name = "gru-script"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+logos = "0.13.0"
+thiserror = "1.0.40"
