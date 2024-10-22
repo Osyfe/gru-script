@@ -1,9 +1,9 @@
 mod lex;
 
 use lex::{Atom, Op, Key, Token, TokenIter};
-use super::{Error, AST, ASTExtra, CodePosition};
+use super::*;
 
-type ResAST = Result<ASTExtra, Error>;
+type ResAST = Result<Located<AST>, Error>;
 
 pub fn debug_lex(file: &str)
 {
@@ -24,7 +24,7 @@ pub fn debug_parse(file: &str)
     let items = items(&mut tokens);
     match items
     {
-        Ok(items) => items.print(0),
+        Ok(items) => AST::Items(items).print(0),
         Err(err) => println!("{err}")
     }
 }
@@ -38,11 +38,11 @@ impl<'source> TokenIter<'source>
         else { Err(Error::Parser(format!("expected \"{expected:?}\", found \"{found:?}"), pos)) }
     }
 
-    fn expect_ident(&mut self) -> Result<ASTExtra, Error>
+    fn expect_ident(&mut self) -> Result<Located<Ident>, Error>
     {
         match self.next()?
         {
-            (Token::Atom(Atom::Ident(v)), pos) => Ok(AST::Ident(v).with(pos)),
+            (Token::Atom(Atom::Ident(v)), pos) => Ok(Ident { name: v }.with(pos)),
             (t, pos) => Err(Error::Parser(format!("expected an identifier; found \"{t:?}\""), pos))
         }
     }
@@ -82,11 +82,6 @@ impl From<Op> for super::OpDouble
 
 impl AST
 {
-    fn with(self, pos: CodePosition) -> ASTExtra
-    {
-        ASTExtra { ast: self, pos }
-    }
-
     fn print(&self, ident: usize)
     {
         const IDENT_BASE: &str = "   ";
@@ -96,83 +91,93 @@ impl AST
             Self::Unit => print!("{ident_str}()"),
             Self::Int(v) => print!("{ident_str}Lit: {v}"),
             Self::Float(v) => print!("{ident_str}Lit: {v}"),
-            Self::Ident(v) => print!("{ident_str}Ident: {v}"),
-            Self::TypedIdent(v, t) =>
+            Self::Ident(v) => print!("{ident_str}Ident: \"{}\"", v.name),
+            Self::Path(Path { steps }) =>
+            {
+                print!("{ident_str}Path\n{ident_str}(\n");
+                for step in steps
+                {
+                    AST::Ident(step.t.clone()).print(ident + 1);
+                    println!(",")
+                }
+                print!("{ident_str})");
+            },
+            Self::TypedIdent(TypedIdent { name: v, ty: t }) =>
             {
                 print!("{ident_str}TypedIdent\n{ident_str}(\n{ident_str}{IDENT_BASE}name:\n");
-                v.ast.print(ident + 1);
+                AST::Ident(v.t.clone()).print(ident + 1);
                 print!(",\n{ident_str}{IDENT_BASE}type:\n");
-                t.ast.print(ident + 1);
+                AST::Path(t.clone()).print(ident + 1);
                 print!("\n{ident_str})");
             },
-            Self::OpSingle(op, hs) =>
+            Self::OpSingle(SingleOp { op, arg: hs }) =>
             {
                 print!("{ident_str}OpSingle\n{ident_str}(\n{ident_str}{IDENT_BASE}op: {op:?},\n{ident_str}{IDENT_BASE}hs:\n");
-                hs.ast.print(ident + 1);
+                hs.t.print(ident + 1);
                 print!("\n{ident_str})");
             },
-            Self::OpDouble(op, lhs, rhs) =>
+            Self::OpDouble(DoubleOp { op, l_arg: lhs, r_arg: rhs }) =>
             {
                 print!("{ident_str}OpDouble\n{ident_str}(\n{ident_str}{IDENT_BASE}op: {op:?},\n{ident_str}{IDENT_BASE}lhs:\n");
-                lhs.ast.print(ident + 1);
+                lhs.t.print(ident + 1);
                 print!(",\n{ident_str}{IDENT_BASE}rhs:\n");
-                rhs.ast.print(ident + 1);
+                rhs.t.print(ident + 1);
                 print!("\n{ident_str})");
             },
             Self::Block(list) =>
             {
                 print!("{ident_str}Block\n{ident_str}(\n");
-                for (i, expr) in list.iter().enumerate()
+                for (i, expr) in list.exprs.iter().enumerate()
                 {
                     print!("{ident_str}{IDENT_BASE}{}:\n", i + 1);
-                    expr.ast.print(ident + 1);
+                    expr.t.print(ident + 1);
                     println!(",");
                 }
                 print!("{ident_str})");
             },
-            Self::FnCall(obj, list) =>
+            Self::FnCall(FnCall { name: obj, args: list }) =>
             {
                 print!("{ident_str}FnCall\n{ident_str}(\n{ident_str}{IDENT_BASE}obj:\n");
-                obj.ast.print(ident + 1);
+                obj.t.print(ident + 1);
                 print!(",\n");
                 for (i, expr) in list.iter().enumerate()
                 {
                     print!("{ident_str}{IDENT_BASE}{}:\n", i + 1);
-                    expr.ast.print(ident + 1);
+                    expr.t.print(ident + 1);
                     println!(",");
                 }
                 print!("{ident_str})");
             },
-            Self::Let(name, value) =>
+            Self::Let(Let { name, value }) =>
             {
                 print!("{ident_str}Let\n{ident_str}{{\n{ident_str}{IDENT_BASE}name:\n");
-                name.ast.print(ident + 1);
+                AST::TypedIdent(name.t.clone()).print(ident + 1);
                 print!(",\n{ident_str}{IDENT_BASE}value:\n");
-                value.ast.print(ident + 1);
+                value.t.print(ident + 1);
                 print!("\n{ident_str}}}");
             },
-            Self::FnDef(name, args, ret, body) =>
+            Self::FnDef(FnDef { name, args, ret, body }) =>
             {
                 print!("{ident_str}FnDef\n{ident_str}{{\n{ident_str}{IDENT_BASE}name:\n");
-                name.ast.print(ident + 1);
+                AST::Ident(name.t.clone()).print(ident + 1);
                 print!(",\n{ident_str}{IDENT_BASE}args:\n");
                 for (i, arg) in args.iter().enumerate()
                 {
                     print!("{ident_str}{IDENT_BASE}{}:\n", i + 1);
-                    arg.ast.print(ident + 1);
+                    AST::TypedIdent(arg.t.clone()).print(ident + 1);
                     println!(",");
                 }
                 print!("{ident_str}{IDENT_BASE}ret:\n");
-                ret.ast.print(ident + 1);
+                AST::Path(ret.clone()).print(ident + 1);
                 print!(",\n{ident_str}{IDENT_BASE}body:\n");
-                body.ast.print(ident + 1);
+                AST::Block(body.clone()).print(ident + 1);
                 print!("\n{ident_str}}}");
             },
-            Self::Items(items) =>
+            Self::Items(Items { fns }) =>
             {
-                for item in items
+                for fn_ in fns
                 {
-                    item.ast.print(0);
+                    AST::FnDef(fn_.t.clone()).print(0);
                     println!("\n");
                 }
             }
@@ -180,7 +185,7 @@ impl AST
     }
 }
 
-fn items(tokens: &mut TokenIter) -> Result<AST, Error>
+fn items(tokens: &mut TokenIter) -> Result<Items, Error>
 {
     let mut items = Vec::new();
     loop
@@ -193,16 +198,19 @@ fn items(tokens: &mut TokenIter) -> Result<AST, Error>
                 tokens.expect(Token::Op(Op::LParen))?;
                 let args = var_list(tokens, Op::RParen)?;
                 tokens.expect(Token::Key(Key::MapsTo))?;
-                let ret = tokens.expect_ident()?;
+                let ret = path(tokens)?;
                 let body = expr(tokens, 0, true)?;
-                if !matches!(body.ast, AST::Block(_)) { return Err(Error::Parser(format!("unexpected expression; expected a block"), pos)); }
-                items.push(AST::FnDef(Box::new(name), args, Box::new(ret), Box::new(body)).with(pos));
+                match body.t
+                {
+                    AST::Block(body) => items.push(FnDef { name: Box::new(name), args, ret, body }.with(pos)),
+                    _ => return Err(Error::Parser(format!("unexpected expression; expected a block"), pos))
+                }
             },
             (Token::Eof, _) => break,
             (t, pos) => return Err(Error::Parser(format!("unexpected token: {t:?}"), pos))
         }
     }
-    Ok(AST::Items(items))
+    Ok(Items { fns: items })
 }
 
 fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
@@ -211,7 +219,7 @@ fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
     {
         (Token::Atom(Atom::Int(v)), pos) => AST::Int(v).with(pos),
         (Token::Atom(Atom::Float(v)), pos) => AST::Float(v).with(pos),
-        (Token::Atom(Atom::Ident(v)), pos) => AST::Ident(v).with(pos),
+        (Token::Atom(Atom::Ident(v)), pos) => AST::Ident(Ident { name: v }).with(pos),
         (Token::Op(Op::LParen), _) =>
         {
             let lhs = expr(tokens, 0, false)?;
@@ -221,14 +229,14 @@ fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
         (Token::Op(Op::LBrace), pos) =>
         {
             let exprs = expr_list(tokens, Op::BlockSep, Op::RBrace, true, true)?;
-            AST::Block(exprs).with(pos)
+            AST::Block(Block { exprs }).with(pos)
         },
         (Token::Key(Key::Let), pos) => if assign
         {
             let var = var(tokens)?;
             let pos = tokens.expect(Token::Op(Op::Assign))?;
             let value = expr(tokens, 0, false)?;
-            return Ok(AST::Let(Box::new(var), Box::new(value)).with(pos));
+            return Ok(AST::Let(Let { name: var, value: Box::new(value) }).with(pos));
         } else
         {
             return Err(Error::Parser(format!("unexpected variable binding"), pos))
@@ -241,7 +249,7 @@ fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
                 None => return Err(Error::Parser(format!("operator is not prefix: {op:?}"), pos))
             };
             let rhs = expr(tokens, r_pc, false)?;
-            AST::OpSingle(op.into(), Box::new(rhs)).with(pos)
+            AST::OpSingle(SingleOp { op: op.into(), arg: Box::new(rhs) }).with(pos)
         }
         (t, pos) => return Err(Error::Parser(format!("unexpected token: {t:?}"), pos))
     };
@@ -264,13 +272,13 @@ fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
                 Op::LParen =>
                 {
                     let exprs = expr_list(tokens, Op::ItemSep, Op::RParen, false, false)?;
-                    AST::FnCall(Box::new(lhs), exprs).with(op_pos)
+                    AST::FnCall(FnCall { name: Box::new(lhs), args: exprs }).with(op_pos)
                 },
                 Op::LBracket =>
                 {
                     let rhs = expr(tokens, 0, false)?;
                     tokens.expect(Token::Op(Op::RBracket))?;
-                    AST::OpDouble(op.into(), Box::new(lhs), Box::new(rhs)).with(op_pos)
+                    AST::OpDouble(DoubleOp { op: op.into(), l_arg: Box::new(lhs), r_arg: Box::new(rhs) }).with(op_pos)
                 },
                 Op::ObjNav | Op::CodeNav => 
                 {
@@ -279,15 +287,15 @@ fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
                     {
                         Token::Atom(Atom::Ident(v)) =>
                         {
-                            let rhs = AST::Ident(v).with(pos);
-                            AST::OpDouble(op.into(), Box::new(lhs), Box::new(rhs)).with(op_pos)
+                            let rhs = AST::Ident(Ident { name: v }).with(pos);
+                            AST::OpDouble(DoubleOp { op: op.into(), l_arg: Box::new(lhs), r_arg: Box::new(rhs) }).with(op_pos)
                         },
                         _ => return Err(Error::Parser(format!("unexpected token {op:?}; expected identifier instead"), pos))
                     }
                 },
                 _ =>
                 {
-                    AST::OpSingle(op.into(), Box::new(lhs)).with(op_pos)
+                    AST::OpSingle(SingleOp { op: op.into(), arg: Box::new(lhs) }).with(op_pos)
                 }
             };
 
@@ -302,7 +310,7 @@ fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
             if matches!(op, Op::Assign) && !assign { return Err(Error::Parser(format!("unexpected variable assign"), op_pos)) }
 
             let rhs = expr(tokens, r_pc, false)?;
-            lhs = AST::OpDouble(op.into(), Box::new(lhs), Box::new(rhs)).with(op_pos);
+            lhs = AST::OpDouble(DoubleOp { op: op.into(), l_arg: Box::new(lhs), r_arg: Box::new(rhs) }).with(op_pos);
 
             continue;
         }
@@ -313,7 +321,7 @@ fn expr(tokens: &mut TokenIter, min_pc: u8, assign: bool) -> ResAST
     Ok(lhs)
 }
 
-fn expr_list(tokens: &mut TokenIter, sep: Op, end: Op, assign: bool, trailing_unit: bool) -> Result<Vec<ASTExtra>, Error>
+fn expr_list(tokens: &mut TokenIter, sep: Op, end: Op, assign: bool, trailing_unit: bool) -> Result<Vec<Located<AST>>, Error>
 {
     let mut exprs = Vec::new();
     let mut current_expr = None;
@@ -355,15 +363,27 @@ fn expr_list(tokens: &mut TokenIter, sep: Op, end: Op, assign: bool, trailing_un
     Ok(exprs)
 }
 
-fn var(token: &mut TokenIter) -> Result<ASTExtra, Error>
+fn path(token: &mut TokenIter) -> Result<Path, Error>
+{
+    let mut idents = Vec::new();
+    idents.push(token.expect_ident()?);
+    while matches!(token.peek()?.0, Token::Op(Op::CodeNav))
+    {
+        token.next()?;
+        idents.push(token.expect_ident()?);
+    }
+    Ok(Path { steps: idents })
+}
+
+fn var(token: &mut TokenIter) -> Result<Located<TypedIdent>, Error>
 {
     let name = token.expect_ident()?;
     let pos = token.expect(Token::Op(Op::Type))?;
-    let typ = token.expect_ident()?;
-    Ok(AST::TypedIdent(Box::new(name), Box::new(typ)).with(pos))
+    let typ = path(token)?;
+    Ok(TypedIdent { name: Box::new(name), ty: typ }.with(pos))
 }
 
-fn var_list(tokens: &mut TokenIter, end: Op) -> Result<Vec<ASTExtra>, Error>
+fn var_list(tokens: &mut TokenIter, end: Op) -> Result<Vec<Located<TypedIdent>>, Error>
 {
     let mut exprs = Vec::new();
     let mut current_var = None;
