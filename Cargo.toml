@@ -3,7 +3,7 @@ name = "gru-script"
 version = "0.1.0"
 authors = ["Jannik Fehre"]
 license = "MIT"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 logos = "0.13.0"
